@@ -66,12 +66,10 @@ jobs:
       - name: Send Kakao Talk Message
         run: |
           MSG=$(cat report.txt | sed 's/"/\\"/g')
-
           curl -v -X POST "https://kapi.kakao.com/v2/api/talk/memo/default/send" \
-            -H "Authorization: Bearer ${{ secrets.KAKAO_TOKEN }}" \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            -d "template_object={
+            -H "Authorization: Bearer ${{ secrets.KAKAO_ACCESS_TOKEN }}" \
+            --data-urlencode "template_object={
               \"object_type\":\"text\",
-              \"text\":\"$MSG\",
+              \"text\":\"$MESSAGE\",
               \"link\":{\"web_url\":\"https://github.com\"}
             }"
