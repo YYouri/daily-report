@@ -17,7 +17,20 @@ REFRESH_TOKEN = os.getenv("KAKAO_REFRESH_TOKEN")  # 최초는 "EMPTY" 같은 문
 class KakaoNotifier:
     def __init__(self):
             global REFRESH_TOKEN, ACCESS_TOKEN
+        print("🔍 환경 변수 RAW 출력 시작 (⚠️ 디버깅용, 배포 전 반드시 삭제!)")
 
+        print(f" - REST_KEY            = {REST_KEY}")
+        print(f" - ACCESS_TOKEN        = {ACCESS_TOKEN}")
+        print(f" - REFRESH_TOKEN       = {REFRESH_TOKEN}")
+        print(f" - REDIRECT_URI        = {REDIRECT_URI}")
+
+        print("🔍 상태 체크 시작")
+        if REFRESH_TOKEN is None:
+            print(" - REFRESH_TOKEN: None (전혀 없음)")
+        elif REFRESH_TOKEN.strip() == "":
+            print(" - REFRESH_TOKEN: '' (빈 문자열)")
+        else:
+            print(" - REFRESH_TOKEN 정상 값")
         # 1) 최초 실행 → refresh_token 이 EMPTY 같은 값일 때
         if REFRESH_TOKEN.strip().upper() in ["EMPTY", "", "NONE", "NULL"]:
             print("⚠️ 최초 상태: Refresh Token 없음 → 최초 발급 시도")
