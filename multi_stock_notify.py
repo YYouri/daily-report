@@ -1,0 +1,75 @@
+import os, json, requests
+from datetime import datetime, timedelta
+import yfinance as yf
+
+TOKEN_FILE = "kakao_access_token.json"
+
+# --- 카카오톡 나에게 보내기 클래스 ---
+class KakaoNotifier:
+    def __init__(self):
+        self.rest_api_key = os.environ["KAKAO_REST_API_KEY"]
+        self.refresh_token = os.environ["KAKAO_REFRESH_TOKEN"]
+        self.redirect_uri = os.environ["KAKAO_REDIRECT_URI"]
+        self.token_info = {}
+        self.load_token()
+
+    def load_token(self):
+        if os.path.exists(TOKEN_FILE):
+            with open(TOKEN_FILE, "r", encoding="utf-8") as f:
+                self.token_info = json.load(f)
+        else:
+            self.refresh_access_token()
+
+    def refresh_access_token(self):
+        url = "https://kauth.kakao.com/oauth/token"
+        data = {
+            "grant_type": "refresh_token",
+            "client_id": self.rest_api_key,
+            "refresh_token": self.refresh_token,
+        }
+        res = requests.post(url, data=data)
+        res.raise_for_status()
+        res_json = res.json()
+        self.token_info["access_token"] = res_json["access_token"]
+        self.token_info["expires_at"] = (datetime.now() + timedelta(seconds=res_json.get("expires_in", 3600))).isoformat()
+        if "refresh_token" in res_json:
+            self.refresh_token = res_json["refresh_token"]
+        with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.token_info, f, ensure_ascii=False, indent=2)
+
+    def send_message(self, text):
+        if not self.token_info.get("access_token"):
+            self.refresh_access_token()
+        url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
+        headers = {
+            "Authorization": f"Bearer {self.token_info['access_token']}",
+            "Content-Type": "application/x-www-form-urlencoded",
+        }
+        template = {"object_type":"text","text":text,"link":{"web_url":"https://finance.yahoo.com"}}
+        data = {"template_object": json.dumps(template, ensure_ascii=False)}
+        res = requests.post(url, headers=headers, data=data)
+        print(res.status_code, res.text)
+        res.raise_for_status()
+
+# --- 주식 정보 조회 ---
+def get_stock_info(tickers=["AAPL","TSLA","MSFT"]):
+    messages = []
+    for t in tickers:
+        stock = yf.Ticker(t)
+        data = stock.history(period="1d")
+        if data.empty:
+            messages.append(f"{t}: 데이터 없음")
+            continue
+        last = data.iloc[-1]
+        diff = last['Close'] - last['Open']
+        arrow = "🔺" if diff > 0 else ("🔻" if diff < 0 else "➡️")
+        messages.append(f"{t}: {last['Close']:.2f} {arrow} ({diff:+.2f})")
+    return "\n".join(messages)
+
+# --- 실행 ---
+if __name__ == "__main__":
+    notifier = KakaoNotifier()
+    stock_message = get_stock_info(["AAPL","TSLA","MSFT"])  # 원하는 종목 코드
+    today = datetime.now().strftime("%Y-%m-%d")
+    message = f"📊 {today} 주식 정보\n{stock_message}"
+    notifier.send_message(message)
