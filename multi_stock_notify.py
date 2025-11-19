@@ -5,117 +5,111 @@ from datetime import datetime, timedelta
 import yfinance as yf
 import time
 
-TOKEN_FILE = "kakao_token.json"
+TOKEN_FILE = "kakao_access_token.json"
 MAX_RETRY = 3
-MAX_MESSAGE_LEN = 900
+MAX_MESSAGE_LEN = 900  # 카톡 메시지 안전 길이
 
-REST_KEY = os.getenv("KAKAO_REST_API_KEY")
-REDIRECT_URI = os.getenv("KAKAO_REDIRECT_URI")
-ACCESS_TOKEN = os.getenv("KAKAO_ACCESS_TOKEN")
-REFRESH_TOKEN = os.getenv("KAKAO_REFRESH_TOKEN")  # 최초는 "EMPTY"
-
-###############################################
-# 필요한 함수 정의
-###############################################
-def update_github_secret(name, value):
-    print(f"👉 (DEBUG) GitHub Secret 갱신 요청: {name} = {value[:10]}...")
-
-def request_new_refresh_token():
-    """
-    최초 실행 시 access_token → refresh_token 발급
-    """
-    print("🔄 최초 refresh_token 발급 요청...")
-
-    URL = "https://kauth.kakao.com/oauth/token"
-    data = {
-        "grant_type": "authorization_code",
-        "client_id": REST_KEY,
-        "redirect_uri": REDIRECT_URI,
-        "code": ACCESS_TOKEN,  # AUTH_CODE 없이 최초 발급 불가 → ACCESS_TOKEN 사용 X
-    }
-
-    print("❗ 현재 구조로는 refresh_token 최초 발급 불가능 (auth_code 필요)")
-    return None  # 추후 수정 필요
-
-def refresh_access_token(refresh_token):
-    """
-    refresh_token 으로 access_token 갱신
-    """
-    print("🔄 refresh_token 으로 access_token 갱신 요청...")
-
-    URL = "https://kauth.kakao.com/oauth/token"
-    data = {
-        "grant_type": "refresh_token",
-        "client_id": REST_KEY,
-        "refresh_token": refresh_token,
-    }
-
-    res = requests.post(URL, data=data)
-    print(f"🔍 kakao응답 = {res.status_code}, {res.text}")
-
-    if res.status_code != 200:
-        return None, None
-
-    json_data = res.json()
-    new_access = json_data.get("access_token")
-    new_refresh = json_data.get("refresh_token")  # 새로 내려올 수도 있음
-
-    return new_access, new_refresh
-
-
-###############################################
-# Kakao Notifier Class
-###############################################
 class KakaoNotifier:
     def __init__(self):
-        global REFRESH_TOKEN, ACCESS_TOKEN
+        self.rest_api_key = os.environ["KAKAO_REST_API_KEY"]
+        self.refresh_token = os.environ["KAKAO_REFRESH_TOKEN"]
+        self.redirect_uri = os.environ["KAKAO_REDIRECT_URI"]
+        self.token_info = {}
+        self.load_token()
 
-        print("🔍 환경 변수 RAW 출력 시작 (⚠️ 디버깅용, 배포 전 반드시 삭제!)")
-        print(f" - REST_KEY       = {REST_KEY}")
-        print(f" - ACCESS_TOKEN   = {ACCESS_TOKEN}")
-        print(f" - REFRESH_TOKEN  = {REFRESH_TOKEN}")
-        print(f" - REDIRECT_URI   = {REDIRECT_URI}")
-
-        print("🔍 상태 체크 시작")
-        if REFRESH_TOKEN is None:
-            print(" - REFRESH_TOKEN: None")
-        elif REFRESH_TOKEN.strip() == "":
-            print(" - REFRESH_TOKEN: '' (빈 문자열)")
+    def load_token(self):
+        if os.path.exists(TOKEN_FILE):
+            with open(TOKEN_FILE, "r", encoding="utf-8") as f:
+                self.token_info = json.load(f)
         else:
-            print(" - REFRESH_TOKEN 정상 값")
+            self.refresh_access_token()
 
-        # 1) 최초 실행: refresh_token 없음
-        if not REFRESH_TOKEN or REFRESH_TOKEN.strip().upper() in ["NONE", "EMPTY", "", "NULL"]:
-            print("⚠️ 최초 상태: Refresh Token 없음 → 최초 발급 시도")
+    def refresh_access_token(self):
+        url = "https://kauth.kakao.com/oauth/token"
+        data = {
+            "grant_type": "refresh_token",
+            "client_id": self.rest_api_key,
+            "refresh_token": self.refresh_token,
+        }
+        try:
+            res = requests.post(url, data=data, timeout=10)
+            print("토큰 갱신 상태:", res.status_code, res.text)
+            res.raise_for_status()
+        except requests.RequestException as e:
+            raise RuntimeError(f"토큰 갱신 실패: {e}")
 
-            new_refresh = request_new_refresh_token()
-            if not new_refresh:
-                print("❌ 최초 refresh_token 발급 실패 → 종료")
-                return
+        res_json = res.json()
+        self.token_info["access_token"] = res_json["access_token"]
+        self.token_info["expires_at"] = (datetime.now() + timedelta(seconds=res_json.get("expires_in", 3600))).isoformat()
+        if "refresh_token" in res_json:
+            self.refresh_token = res_json["refresh_token"]
 
-            update_github_secret("NEW_REFRESH_TOKEN", new_refresh)
-            print("🟢 최초 refresh_token 저장 준비 완료")
-            REFRESH_TOKEN = new_refresh
-            return
+        with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.token_info, f, ensure_ascii=False, indent=2)
 
-        # 2) 기존 refresh_token 활용해 access_token 재발급
-        new_access, new_refresh = refresh_access_token(REFRESH_TOKEN)
+    def send_message(self, text):
+        # 메시지가 너무 길면 나누기
+        messages = [text[i:i+MAX_MESSAGE_LEN] for i in range(0, len(text), MAX_MESSAGE_LEN)]
 
-        if not new_access:
-            print("❌ access_token 갱신 실패 → 종료")
-            return
+        for msg in messages:
+            for attempt in range(1, MAX_RETRY+1):
+                try:
+                    if not self.token_info.get("access_token"):
+                        self.refresh_access_token()
 
-        update_github_secret("NEW_ACCESS_TOKEN", new_access)
+                    url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
+                    headers = {
+                        "Authorization": f"Bearer {self.token_info['access_token']}",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    }
+                    template = {
+                        "object_type": "text",
+                        "text": msg,
+                        "link": {"web_url": "https://finance.yahoo.com"}
+                    }
+                    data = {"template_object": json.dumps(template, ensure_ascii=False)}
 
-        if new_refresh:
-            update_github_secret("NEW_REFRESH_TOKEN", new_refresh)
+                    res = requests.post(url, headers=headers, data=data, timeout=10)
+                    print(f"시도 {attempt} 상태:", res.status_code, res.text)
 
-        ACCESS_TOKEN = new_access
-        print("🟢 Kakao Token Update Completed")
+                    if res.status_code == 401:
+                        print("401 Unauthorized → 토큰 갱신 후 재시도")
+                        self.refresh_access_token()
+                        continue
 
+                    res.raise_for_status()
+                    print("카톡 메시지 전송 성공 ✅")
+                    break
 
-###############################################
-# 실행
-###############################################
+                except requests.RequestException as e:
+                    print(f"전송 실패 시도 {attempt}: {e}")
+                    if attempt < MAX_RETRY:
+                        time.sleep(2)
+                    else:
+                        print("최종 실패 ❌")
+
+# --- 주식 정보 조회 ---
+def get_stock_info(tickers=["AAPL","TSLA","MSFT"]):
+    messages = []
+    for t in tickers:
+        stock = yf.Ticker(t)
+        data = stock.history(period="1d")
+        if data.empty:
+            messages.append(f"{t}: 데이터 없음")
+            continue
+        last = data.iloc[-1]
+        diff = last['Close'] - last['Open']
+        arrow = "🔺" if diff > 0 else ("🔻" if diff < 0 else "➡️")
+        messages.append(f"{t}: {last['Close']:.2f} {arrow} ({diff:+.2f})")
+    return "\n".join(messages)
+
+# --- 실행 ---
 if __name__ == "__main__":
-    notifier = KakaoNotifier()
+    try:
+        notifier = KakaoNotifier()
+        stock_message = get_stock_info(["AAPL","TSLA","MSFT","GOOG","AMZN"])  # 원하는 종목 추가
+        today = datetime.now().strftime("%Y-%m-%d")
+        message = f"📊 {today} 주식 정보\n{stock_message}"
+        notifier.send_message(message)
+    except Exception as e:
+        print("스크립트 실행 중 오류:", e)
