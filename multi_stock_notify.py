@@ -1,8 +1,12 @@
-import os, json, requests
+import os
+import json
+import requests
 from datetime import datetime, timedelta
 import yfinance as yf
+import time
 
 TOKEN_FILE = "kakao_access_token.json"
+MAX_RETRY = 3  # 전송 실패 시 재시도 횟수
 
 # --- 카카오톡 나에게 보내기 클래스 ---
 class KakaoNotifier:
@@ -27,29 +31,61 @@ class KakaoNotifier:
             "client_id": self.rest_api_key,
             "refresh_token": self.refresh_token,
         }
-        res = requests.post(url, data=data)
-        res.raise_for_status()
+        try:
+            res = requests.post(url, data=data, timeout=10)
+            print("토큰 갱신 HTTP 상태:", res.status_code)
+            print("응답:", res.text)
+            res.raise_for_status()
+        except requests.RequestException as e:
+            raise RuntimeError(f"토큰 갱신 실패: {e}")
+
         res_json = res.json()
         self.token_info["access_token"] = res_json["access_token"]
         self.token_info["expires_at"] = (datetime.now() + timedelta(seconds=res_json.get("expires_in", 3600))).isoformat()
         if "refresh_token" in res_json:
             self.refresh_token = res_json["refresh_token"]
+
         with open(TOKEN_FILE, "w", encoding="utf-8") as f:
             json.dump(self.token_info, f, ensure_ascii=False, indent=2)
 
     def send_message(self, text):
-        if not self.token_info.get("access_token"):
-            self.refresh_access_token()
-        url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
-        headers = {
-            "Authorization": f"Bearer {self.token_info['access_token']}",
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-        template = {"object_type":"text","text":text,"link":{"web_url":"https://finance.yahoo.com"}}
-        data = {"template_object": json.dumps(template, ensure_ascii=False)}
-        res = requests.post(url, headers=headers, data=data)
-        print(res.status_code, res.text)
-        res.raise_for_status()
+        for attempt in range(1, MAX_RETRY + 1):
+            try:
+                if not self.token_info.get("access_token"):
+                    self.refresh_access_token()
+
+                url = "https://kapi.kakao.com/v2/api/talk/memo/default/send"
+                headers = {
+                    "Authorization": f"Bearer {self.token_info['access_token']}",
+                    "Content-Type": "application/x-www-form-urlencoded",
+                }
+                template = {
+                    "object_type": "text",
+                    "text": text,
+                    "link": {"web_url": "https://finance.yahoo.com"}
+                }
+                data = {"template_object": json.dumps(template, ensure_ascii=False)}
+
+                res = requests.post(url, headers=headers, data=data, timeout=10)
+                print(f"전송 시도 {attempt} HTTP 상태:", res.status_code)
+                print("응답:", res.text)
+
+                if res.status_code == 401:  # 토큰 만료 등
+                    print("401 Unauthorized → 토큰 갱신 후 재시도")
+                    self.refresh_access_token()
+                    continue
+
+                res.raise_for_status()
+                print("카톡 메시지 전송 성공 ✅")
+                return True
+
+            except requests.RequestException as e:
+                print(f"전송 실패 시도 {attempt}: {e}")
+                if attempt < MAX_RETRY:
+                    time.sleep(2)  # 잠시 대기 후 재시도
+                else:
+                    print("최종 실패 ❌")
+                    return False
 
 # --- 주식 정보 조회 ---
 def get_stock_info(tickers=["AAPL","TSLA","MSFT"]):
@@ -68,8 +104,11 @@ def get_stock_info(tickers=["AAPL","TSLA","MSFT"]):
 
 # --- 실행 ---
 if __name__ == "__main__":
-    notifier = KakaoNotifier()
-    stock_message = get_stock_info(["AAPL","TSLA","MSFT"])  # 원하는 종목 코드
-    today = datetime.now().strftime("%Y-%m-%d")
-    message = f"📊 {today} 주식 정보\n{stock_message}"
-    notifier.send_message(message)
+    try:
+        notifier = KakaoNotifier()
+        stock_message = get_stock_info(["AAPL","TSLA","MSFT"])
+        today = datetime.now().strftime("%Y-%m-%d")
+        message = f"📊 {today} 주식 정보\n{stock_message}"
+        notifier.send_message(message)
+    except Exception as e:
+        print("스크립트 실행 중 오류:", e)
