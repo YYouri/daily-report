@@ -11,76 +11,142 @@ MAX_MESSAGE_LEN = 900  # 카톡 메시지 안전 길이
 
 class KakaoNotifier:
     def __init__(self):
-        self.rest_api_key = os.environ["KAKAO_REST_API_KEY"]
-        self.redirect_uri = os.environ["KAKAO_REDIRECT_URI"]
-        self.access_token = os.environ["KAKAO_ACCESS_TOKEN"]
-        self.refresh_token = os.environ.get("KAKAO_REFRESH_TOKEN", "")
-        self.token_info = {}
-        self.load_token()
+        self.rest_key = os.getenv("KAKAO_REST_API_KEY")
+        self.redirect_uri = os.getenv("KAKAO_REDIRECT_URI")
 
-    def load_token(self):
+        # 초기값: Secrets에서 가져옴
+        self.access_token = os.getenv("KAKAO_ACCESS_TOKEN", "")
+        self.refresh_token = os.getenv("KAKAO_REFRESH_TOKEN", "")
+
+        # 로컬에 저장된 token 파일 우선 적용
+        self.load_local_token()
+
+        # 토큰 유효성 확인 및 필요 시 자동 갱신
+        self.validate_and_refresh_tokens()
+
+     # -------------------------------
+    # 1. LOCAL TOKEN LOAD
+    # -------------------------------
+    def load_local_token(self):
         if os.path.exists(TOKEN_FILE):
-            with open(TOKEN_FILE, "r", encoding="utf-8") as f:
-                self.token_info = json.load(f)
-                self.access_token = self.token_info.get("access_token", self.access_token)
-                self.refresh_token = self.token_info.get("refresh_token", self.refresh_token)
-        else:
-            # 최초 실행, refresh_token이 없으면 access_token으로 발급 시도
-            if not self.refresh_token:
-                print("🚀 최초 실행: access_token으로 refresh_token 발급 시도")
-                self.obtain_refresh_token()
-
-    def save_token(self):
-        self.token_info["access_token"] = self.access_token
-        self.token_info["refresh_token"] = self.refresh_token
-        with open(TOKEN_FILE, "w", encoding="utf-8") as f:
-            json.dump(self.token_info, f, ensure_ascii=False, indent=2)
-
-    def obtain_refresh_token(self):
-        # 카카오 API에선 refresh_token은 access_token 발급 시 같이 내려옴
-        # 여기서는 access_token으로 refresh_token 발급 시도 (grant_type=refresh_token)
-        if not self.refresh_token:
-            url = "https://kauth.kakao.com/oauth/token"
-            data = {
-                "grant_type": "refresh_token",
-                "client_id": self.rest_api_key,
-                "refresh_token": "",
-            }
             try:
-                res = requests.post(url, data=data, timeout=10)
-                print("refresh_token 발급 시도 상태:", res.status_code, res.text)
-                if res.status_code == 200:
-                    res_json = res.json()
-                    self.refresh_token = res_json.get("refresh_token", "")
-                    self.access_token = res_json.get("access_token", self.access_token)
-                    self.save_token()
-                    print("✅ refresh_token 발급 성공")
-                else:
-                    print("❌ refresh_token 발급 실패, 수동 갱신 필요")
-            except Exception as e:
-                print("refresh_token 발급 중 오류:", e)
+                with open(TOKEN_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    self.access_token = data.get("access_token", self.access_token)
+                    self.refresh_token = data.get("refresh_token", self.refresh_token)
+                print("📌 로컬 토큰 로드 완료")
+            except:
+                print("⚠ 로컬 토큰 로드 실패 → 기본값 사용")
 
-    def refresh_access_token(self):
-        if not self.refresh_token:
-            print("❌ refresh_token 없음 → 수동 발급 필요")
+        else:
+            # JSON 파일 없으면 만들어줌
+            self.save_local_token()
+            print("📌 로컬 토큰 파일 생성")
+
+    # -------------------------------
+    # 2. LOCAL TOKEN SAVE
+    # -------------------------------
+    def save_local_token(self):
+        data = {
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token
+        }
+        with open(TOKEN_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    # -------------------------------
+    # 3. REFRESH TOKEN 발급
+    # 최초 실행 + refresh_token 오류 시 사용
+    # -------------------------------
+    def issue_refresh_token_via_access(self):
+        print("🔄 access_token 으로 refresh_token 발급 시도...")
+
+        url = "https://kapi.kakao.com/v2/user/me"
+
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+
+        # user/me 호출 → 정상일 경우 refresh_token 포함됨
+        res = requests.post(url, headers=headers)
+
+        if res.status_code == 401:
+            print("❌ access_token 자체가 유효하지 않음 → 새로 발급 필요")
             return False
+
+        if "refresh_token" not in res.headers:
+            print("⚠ 응답에 refresh_token 없음 → 재시도 필요")
+            return False
+
+        # refresh_token 추출
+        self.refresh_token = res.headers["refresh_token"]
+        print("✅ refresh_token 발급 성공:", self.refresh_token)
+
+        self.save_local_token()
+        return True
+
+    # -------------------------------
+    # 4. REFRESH TOKEN으로 ACCESS 갱신
+    # -------------------------------
+    def refresh_access_token(self):
+        print("🔄 refresh_token으로 access_token 갱신 시도...")
+
         url = "https://kauth.kakao.com/oauth/token"
+
         data = {
             "grant_type": "refresh_token",
-            "client_id": self.rest_api_key,
-            "refresh_token": self.refresh_token,
+            "client_id": self.rest_key,
+            "refresh_token": self.refresh_token
         }
-        try:
-            res = requests.post(url, data=data, timeout=10)
-            print("access_token 갱신 상태:", res.status_code, res.text)
-            res.raise_for_status()
-            res_json = res.json()
-            self.access_token = res_json.get("access_token", self.access_token)
-            self.save_token()
-            return True
-        except Exception as e:
-            print("access_token 갱신 실패:", e)
+
+        res = requests.post(url, data=data)
+
+        if res.status_code != 200:
+            print("❌ refresh_token 갱신 실패", res.text)
             return False
+
+        res_json = res.json()
+
+        self.access_token = res_json.get("access_token", self.access_token)
+
+        if "refresh_token" in res_json:
+            self.refresh_token = res_json["refresh_token"]
+
+        print("✅ access_token 갱신 성공")
+        self.save_local_token()
+        return True
+
+    # -------------------------------
+    # 5. TOKEN VALIDATION LOGIC
+    # -------------------------------
+    def validate_and_refresh_tokens(self):
+        print("🔍 토큰 유효성 검사 시작...")
+
+        # 테스트용 simple profile API
+        test_url = "https://kapi.kakao.com/v2/user/me"
+        headers = {"Authorization": f"Bearer {self.access_token}"}
+
+        res = requests.post(test_url, headers=headers)
+
+        # access_token 정상
+        if res.status_code == 200:
+            print("✅ access_token 정상")
+            return True
+
+        # access_token 만료 → refresh_token으로 갱신
+        if res.status_code == 401:
+            print("⚠ access_token 만료 → refresh_token 갱신 필요")
+
+            if self.refresh_token:
+                ok = self.refresh_access_token()
+                if ok:
+                    return True
+                else:
+                    print("❌ refresh_token 갱신 실패 → access_token으로 refresh_token 발급 시도")
+
+        # refresh_token도 잘못되었거나 없는 경우
+        print("⚠ refresh_token 없음 또는 무효 → access_token으로 refresh_token 재발급")
+        self.issue_refresh_token_via_access()
+
+        return True
 
     def send_message(self, text):
         # 메시지 길이 분할
