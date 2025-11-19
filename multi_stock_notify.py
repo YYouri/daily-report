@@ -98,7 +98,7 @@ else:
         new_refresh = request_new_refresh_token()
         if not new_refresh:
             print("❌ 최초 refresh_token 발급 실패 → 종료")
-            return
+           # return
 
         # GitHub Secrets 에 refresh_token 저장 요청
         update_github_secret("NEW_REFRESH_TOKEN", new_refresh)
