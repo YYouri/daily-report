@@ -35,11 +35,11 @@ REST API 키(client_id) 를 발급받고, 카카오 API는 액세스 토큰(Acce
 
 - REFRESH_TOKEN 발급 방법
 
-  curl -X POST "https://kauth.kakao.com/oauth/token" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "grant_type=authorization_code" \
-  -d "client_id={client_id}" \
-  -d "redirect_uri=https://example.com/oauth" \
+  curl -X POST "https://kauth.kakao.com/oauth/token" \\
+  -H "Content-Type: application/x-www-form-urlencoded" \\
+  -d "grant_type=authorization_code" \\
+  -d "client_id={client_id}" \\
+  -d "redirect_uri=https://example.com/oauth" \\
   -d "code={Auth code}"
 
 - 참고, 응답 예제
@@ -48,3 +48,4 @@ REST API 키(client_id) 를 발급받고, 카카오 API는 액세스 토큰(Acce
    "token_type":"bearer",
    "refresh_token":"YvHYxQTojVOvXTVi2y-Kt6gsvO2otzEGAAAAAgoXNd0AAAGam1RSTh7SOb8w2j0_",
    "expires_in":21599,"scope":"talk_message","refresh_token_expires_in":5183999}
+
